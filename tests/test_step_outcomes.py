@@ -127,6 +127,24 @@ class StepOutcomeTests(unittest.TestCase):
                 self.assertEqual(result.action["action"], "Back")
                 self.assertEqual(agent.action_handler.execute.call_count, 1)
 
+    def test_malformed_envelopes_never_execute_actions_on_either_platform(self):
+        for ios in (False, True):
+            for action in (
+                'doodle(action="Back")', 'finishgarbage',
+                'do(action="Back", _metadata="finish")',
+                'do(action="Type", text="hello", _metadata="finish")',
+                'do(action="Back", action="Home")',
+                'do(123, action="Back")',
+            ):
+                with self.subTest(ios=ios, action=action):
+                    _, agent = self.make_agent(ios, action=action)
+                    result = agent.step("test")
+                    self.assertFalse(result.success)
+                    self.assertTrue(result.finished)
+                    self.assertIsNone(result.action)
+                    self.assertIn("Action parse error:", result.message)
+                    agent.action_handler.execute.assert_not_called()
+
     def test_failed_terminal_action_has_no_completion_banner(self):
         for ios in (False, True):
             with self.subTest(ios=ios):

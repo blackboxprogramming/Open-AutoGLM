@@ -1,4 +1,7 @@
-"""Action handler for processing AI model outputs."""
+"""Action handler for processing AI model outputs.
+
+Modified by BlackRoad: strictly parse literal calls and reserve action metadata.
+"""
 
 import ast
 import re
@@ -330,61 +333,64 @@ class ActionHandler:
 
 
 def parse_action(response: str) -> dict[str, Any]:
+    """Parse one literal do(...) or finish(...) call without executing code.
+
+    Model text cannot supply internal metadata. Strings must use valid Python
+    quoting and escaping; raw multiline text can use triple-quoted literals.
+    Malformed, oversized and excessively complex responses raise ValueError
+    without echoing their potentially private content.
     """
-    Parse action from model response.
+    if not isinstance(response, str):
+        raise ValueError("Action response must be a string")
+    if len(response) > 65536:
+        raise ValueError("Action response exceeds the 65536-character limit")
 
-    Args:
-        response: Raw response string from the model.
-
-    Returns:
-        Parsed action dictionary.
-
-    Raises:
-        ValueError: If the response cannot be parsed.
-    """
-    print(f"Parsing action: {response}")
     try:
-        response = response.strip()
-        if response.startswith('do(action="Type"') or response.startswith(
-            'do(action="Type_Name"'
-        ):
-            text = response.split("text=", 1)[1][1:-2]
-            action = {"_metadata": "do", "action": "Type", "text": text}
-            return action
-        elif response.startswith("do"):
-            # Use AST parsing instead of eval for safety
-            try:
-                # Escape special characters (newlines, tabs, etc.) for valid Python syntax
-                response = response.replace('\n', '\\n')
-                response = response.replace('\r', '\\r')
-                response = response.replace('\t', '\\t')
+        tree = ast.parse(response.strip(), mode="eval")
+    except (SyntaxError, ValueError, RecursionError):
+        raise ValueError("Invalid action syntax") from None
 
-                tree = ast.parse(response, mode="eval")
-                if not isinstance(tree.body, ast.Call):
-                    raise ValueError("Expected a function call")
+    if sum(1 for _ in ast.walk(tree)) > 4096:
+        raise ValueError("Action response is too complex")
+    call = tree.body
+    if (
+        not isinstance(call, ast.Call)
+        or not isinstance(call.func, ast.Name)
+        or call.func.id not in {"do", "finish"}
+    ):
+        raise ValueError("Expected one do() or finish() call")
+    if call.args:
+        raise ValueError("Action calls accept keyword arguments only")
 
-                call = tree.body
-                # Extract keyword arguments safely
-                action = {"_metadata": "do"}
-                for keyword in call.keywords:
-                    key = keyword.arg
-                    value = ast.literal_eval(keyword.value)
-                    action[key] = value
+    arguments = {}
+    for keyword in call.keywords:
+        key = keyword.arg
+        if key is None:
+            raise ValueError("Expanded keyword arguments are not allowed")
+        if key == "_metadata":
+            raise ValueError("Action metadata is reserved")
+        if key in arguments:
+            raise ValueError("Duplicate action keyword")
+        try:
+            arguments[key] = ast.literal_eval(keyword.value)
+        except (ValueError, TypeError, SyntaxError, RecursionError):
+            raise ValueError("Action values must be literals") from None
 
-                return action
-            except (SyntaxError, ValueError) as e:
-                raise ValueError(f"Failed to parse do() action: {e}")
+    if call.func.id == "finish":
+        if set(arguments) - {"message"}:
+            raise ValueError("finish() accepts only a message")
+        if "message" in arguments and not isinstance(arguments["message"], str):
+            raise ValueError("Finish message must be a string")
+    else:
+        action_name = arguments.get("action")
+        if not isinstance(action_name, str) or not action_name.strip():
+            raise ValueError("do() requires a nonempty string action")
+        if action_name in {"Type", "Type_Name"}:
+            if not isinstance(arguments.get("text"), str):
+                raise ValueError("Type actions require string text")
+            arguments["action"] = "Type"
 
-        elif response.startswith("finish"):
-            action = {
-                "_metadata": "finish",
-                "message": response.replace("finish(message=", "")[1:-2],
-            }
-        else:
-            raise ValueError(f"Failed to parse action: {response}")
-        return action
-    except Exception as e:
-        raise ValueError(f"Failed to parse action: {e}")
+    return {"_metadata": call.func.id, **arguments}
 
 
 def do(**kwargs) -> dict[str, Any]:
