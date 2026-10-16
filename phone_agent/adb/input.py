@@ -1,4 +1,7 @@
-"""Input utilities for Android device text input."""
+"""Input utilities for Android device text input.
+
+Modified by BlackRoad: propagate failed keyboard restoration commands.
+"""
 
 import base64
 import subprocess
@@ -98,7 +101,10 @@ def restore_keyboard(ime: str, device_id: str | None = None) -> None:
     adb_prefix = _get_adb_prefix(device_id)
 
     subprocess.run(
-        adb_prefix + ["shell", "ime", "set", ime], capture_output=True, text=True
+        adb_prefix + ["shell", "ime", "set", ime],
+        capture_output=True,
+        text=True,
+        check=True,
     )
 
 

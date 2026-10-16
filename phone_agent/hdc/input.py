@@ -1,4 +1,7 @@
-"""Input utilities for HarmonyOS device text input."""
+"""Input utilities for HarmonyOS device text input.
+
+Modified by BlackRoad: propagate failed keyboard restoration commands.
+"""
 
 import base64
 import subprocess
@@ -134,12 +137,12 @@ def restore_keyboard(ime: str, device_id: str | None = None) -> None:
 
     hdc_prefix = _get_hdc_prefix(device_id)
 
-    try:
-        _run_hdc_command(
-            hdc_prefix + ["shell", "ime", "set", ime], capture_output=True, text=True
-        )
-    except Exception:
-        pass
+    _run_hdc_command(
+        hdc_prefix + ["shell", "ime", "set", ime],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
 
 
 def _get_hdc_prefix(device_id: str | None) -> list:

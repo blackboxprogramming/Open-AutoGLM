@@ -90,3 +90,30 @@ and swipes reach those boundaries with expected pixel arguments; invalid
 gestures never reach device controls, and invalid waits never reach sleep.
 Compilation and whitespace checks pass. This is offline verification; real
 device outcomes and inference remain unverified.
+
+## Keyboard cleanup on text-entry failures
+
+Once keyboard selection returns the original IME, the Android/HarmonyOS handler
+attempts to restore that exact IME on the same selected device after clearing,
+typing, delay errors and interruptions. Invalid non-string text fails before
+keyboard selection or clearing. A restoration error after otherwise successful
+typing fails the action; combined input/restoration errors retain both messages.
+Active interruptions propagate even when cleanup also fails.
+
+ADB and HarmonyOS restoration commands now use checked subprocess execution;
+HarmonyOS no longer swallows restoration transport errors. The existing
+HarmonyOS no-op for an absent original IME remains. Successful command exit does
+not independently prove the device applied the keyboard change.
+
+Nine handler cleanup tests reproduced 13 failed assertions against
+`3df8034c6a409442a68e44ead389512e48851ac2`; four restore-adapter tests reproduced
+three additional failed assertions against the original adapters. All 42
+combined test methods now pass, with compilation and whitespace checks passing.
+The restore-adapter tests load actual source, including the HDC command helper,
+and replace subprocess execution only. No keyboard or device was changed here.
+
+This covers cleanup after selection returns an original IME. Partial changes
+inside a keyboard-selection call that raises before returning, nonzero exits
+from other text-entry commands, and iOS keyboard lifecycle remain separate
+work. Tests establish restoration attempts and error propagation, not live
+keyboard restoration or successful on-device text entry.

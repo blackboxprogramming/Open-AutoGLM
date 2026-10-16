@@ -1,7 +1,7 @@
 """Action handler for processing AI model outputs.
 
-Modified by BlackRoad: strictly parse literal calls, reserve metadata and bound
-coordinate/wait inputs before device actions.
+Modified by BlackRoad: strictly parse literal calls, reserve metadata, bound
+coordinate/wait inputs and restore the original keyboard after text-entry errors.
 """
 
 import ast
@@ -191,24 +191,36 @@ class ActionHandler:
     def _handle_type(self, action: dict, width: int, height: int) -> ActionResult:
         """Handle text input action."""
         text = action.get("text", "")
+        if not isinstance(text, str):
+            return ActionResult(False, False, "Text input must be a string")
 
         device_factory = get_device_factory()
 
         # Switch to ADB keyboard
         original_ime = device_factory.detect_and_set_adb_keyboard(self.device_id)
-        time.sleep(TIMING_CONFIG.action.keyboard_switch_delay)
-
-        # Clear existing text and type new text
-        device_factory.clear_text(self.device_id)
-        time.sleep(TIMING_CONFIG.action.text_clear_delay)
-
-        # Handle multiline text by splitting on newlines
-        device_factory.type_text(text, self.device_id)
-        time.sleep(TIMING_CONFIG.action.text_input_delay)
-
-        # Restore original keyboard
-        device_factory.restore_keyboard(original_ime, self.device_id)
-        time.sleep(TIMING_CONFIG.action.keyboard_restore_delay)
+        input_error = None
+        try:
+            time.sleep(TIMING_CONFIG.action.keyboard_switch_delay)
+            device_factory.clear_text(self.device_id)
+            time.sleep(TIMING_CONFIG.action.text_clear_delay)
+            device_factory.type_text(text, self.device_id)
+            time.sleep(TIMING_CONFIG.action.text_input_delay)
+        except BaseException as error:
+            input_error = error
+            raise
+        finally:
+            try:
+                device_factory.restore_keyboard(original_ime, self.device_id)
+                time.sleep(TIMING_CONFIG.action.keyboard_restore_delay)
+            except Exception as restore_error:
+                if input_error is None:
+                    raise
+                if isinstance(input_error, Exception):
+                    raise RuntimeError(
+                        f"Text input failed: {input_error}; "
+                        f"keyboard restoration failed: {restore_error}"
+                    ) from input_error
+                # Preserve an active interruption even if cleanup also fails.
 
         return ActionResult(True, False)
 
