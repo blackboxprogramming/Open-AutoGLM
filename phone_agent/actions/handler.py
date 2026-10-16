@@ -1,9 +1,11 @@
 """Action handler for processing AI model outputs.
 
-Modified by BlackRoad: strictly parse literal calls and reserve action metadata.
+Modified by BlackRoad: strictly parse literal calls, reserve metadata and bound
+coordinate/wait inputs before device actions.
 """
 
 import ast
+import math
 import re
 import subprocess
 import time
@@ -12,6 +14,43 @@ from typing import Any, Callable
 
 from phone_agent.config.timing import TIMING_CONFIG
 from phone_agent.device_factory import get_device_factory
+
+
+def relative_to_absolute(
+    element: list[int] | tuple[int, int], screen_width: int, screen_height: int
+) -> tuple[int, int]:
+    """Validate documented 0-999 coordinates and scale with integer arithmetic."""
+    if (
+        type(screen_width) is not int
+        or type(screen_height) is not int
+        or screen_width <= 0
+        or screen_height <= 0
+    ):
+        raise ValueError("Screen dimensions must be positive integers")
+    if not isinstance(element, (list, tuple)) or len(element) != 2:
+        raise ValueError("Coordinates must contain exactly two integers")
+    if any(type(value) is not int or not 0 <= value <= 999 for value in element):
+        raise ValueError("Coordinates must be integers between 0 and 999")
+    return (
+        element[0] * screen_width // 1000,
+        element[1] * screen_height // 1000,
+    )
+
+
+def parse_wait_duration(value: str) -> float:
+    """Parse a finite wait of 0-30 seconds; do not replace invalid input."""
+    if not isinstance(value, str):
+        raise ValueError("Wait duration must be a string")
+    text = value.strip()
+    if text.endswith("seconds"):
+        text = text[:-7].strip()
+    try:
+        duration = float(text)
+    except ValueError:
+        raise ValueError("Wait duration must be a number of seconds") from None
+    if not math.isfinite(duration) or not 0 <= duration <= 30:
+        raise ValueError("Wait duration must be finite and between 0 and 30 seconds")
+    return duration
 
 
 @dataclass
@@ -113,10 +152,8 @@ class ActionHandler:
     def _convert_relative_to_absolute(
         self, element: list[int], screen_width: int, screen_height: int
     ) -> tuple[int, int]:
-        """Convert relative coordinates (0-1000) to absolute pixels."""
-        x = int(element[0] / 1000 * screen_width)
-        y = int(element[1] / 1000 * screen_height)
-        return x, y
+        """Validate relative coordinates (0-999) and convert to pixels."""
+        return relative_to_absolute(element, screen_width, screen_height)
 
     def _handle_launch(self, action: dict, width: int, height: int) -> ActionResult:
         """Handle app launch action."""
@@ -226,12 +263,7 @@ class ActionHandler:
 
     def _handle_wait(self, action: dict, width: int, height: int) -> ActionResult:
         """Handle wait action."""
-        duration_str = action.get("duration", "1 seconds")
-        try:
-            duration = float(duration_str.replace("seconds", "").strip())
-        except ValueError:
-            duration = 1.0
-
+        duration = parse_wait_duration(action.get("duration", "1 seconds"))
         time.sleep(duration)
         return ActionResult(True, False)
 

@@ -1,9 +1,13 @@
-"""Action handler for iOS automation using WebDriverAgent."""
+"""Action handler for iOS automation using WebDriverAgent.
+
+Modified by BlackRoad: share coordinate and wait validation before device actions.
+"""
 
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from phone_agent.actions.handler import parse_wait_duration, relative_to_absolute
 from phone_agent.xctest import (
     back,
     double_tap,
@@ -118,10 +122,8 @@ class IOSActionHandler:
     def _convert_relative_to_absolute(
         self, element: list[int], screen_width: int, screen_height: int
     ) -> tuple[int, int]:
-        """Convert relative coordinates (0-1000) to absolute pixels."""
-        x = int(element[0] / 1000 * screen_width)
-        y = int(element[1] / 1000 * screen_height)
-        return x, y
+        """Validate relative coordinates (0-999) and convert to pixels."""
+        return relative_to_absolute(element, screen_width, screen_height)
 
     def _handle_launch(self, action: dict, width: int, height: int) -> ActionResult:
         """Handle app launch action."""
@@ -236,12 +238,7 @@ class IOSActionHandler:
 
     def _handle_wait(self, action: dict, width: int, height: int) -> ActionResult:
         """Handle wait action."""
-        duration_str = action.get("duration", "1 seconds")
-        try:
-            duration = float(duration_str.replace("seconds", "").strip())
-        except ValueError:
-            duration = 1.0
-
+        duration = parse_wait_duration(action.get("duration", "1 seconds"))
         time.sleep(duration)
         return ActionResult(True, False)
 
