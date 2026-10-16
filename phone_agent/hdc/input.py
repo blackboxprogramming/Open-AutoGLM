@@ -1,13 +1,24 @@
 """Input utilities for HarmonyOS device text input.
 
-Modified by BlackRoad: propagate failed keyboard restoration commands.
+Modified by BlackRoad: check input commands and propagate multiline failures.
 """
 
 import base64
 import subprocess
+from subprocess import CalledProcessError
 from typing import Optional
 
 from phone_agent.hdc.connection import _run_hdc_command
+
+
+def _run_input_command(command: list[str]) -> subprocess.CompletedProcess:
+    """Check command exit without exposing typed content in error messages."""
+    try:
+        return _run_hdc_command(command, capture_output=True, text=True, check=True)
+    except CalledProcessError as error:
+        raise RuntimeError(
+            f"HDC input command failed with exit status {error.returncode}"
+        ) from None
 
 
 def type_text(text: str, device_id: str | None = None) -> None:
@@ -35,22 +46,15 @@ def type_text(text: str, device_id: str | None = None) -> None:
                 # Escape special characters for shell
                 escaped_line = line.replace('"', '\\"').replace("$", "\\$")
 
-                _run_hdc_command(
+                _run_input_command(
                     hdc_prefix + ["shell", "uitest", "uiInput", "text", escaped_line],
-                    capture_output=True,
-                    text=True,
                 )
 
             # Send ENTER key event after each line except the last one
             if i < len(lines) - 1:
-                try:
-                    _run_hdc_command(
-                        hdc_prefix + ["shell", "uitest", "uiInput", "keyEvent", "2054"],
-                        capture_output=True,
-                        text=True,
-                    )
-                except Exception as e:
-                    print(f"[HDC] ENTER keyEvent failed: {e}")
+                _run_input_command(
+                    hdc_prefix + ["shell", "uitest", "uiInput", "keyEvent", "2054"]
+                )
     else:
         # Single line text - original logic
         # Escape special characters for shell (keep quotes for proper text handling)
@@ -59,10 +63,8 @@ def type_text(text: str, device_id: str | None = None) -> None:
 
         # HarmonyOS uitest uiInput text command
         # Format: hdc shell uitest uiInput text "文本内容"
-        _run_hdc_command(
+        _run_input_command(
             hdc_prefix + ["shell", "uitest", "uiInput", "text", escaped_text],
-            capture_output=True,
-            text=True,
         )
 
 
@@ -80,15 +82,11 @@ def clear_text(device_id: str | None = None) -> None:
     hdc_prefix = _get_hdc_prefix(device_id)
     # Ctrl+A to select all (key code 2072 for Ctrl, 2017 for A)
     # Then delete
-    _run_hdc_command(
+    _run_input_command(
         hdc_prefix + ["shell", "uitest", "uiInput", "keyEvent", "2072", "2017"],
-        capture_output=True,
-        text=True,
     )
-    _run_hdc_command(
+    _run_input_command(
         hdc_prefix + ["shell", "uitest", "uiInput", "keyEvent", "2055"],  # Delete key
-        capture_output=True,
-        text=True,
     )
 
 
@@ -109,19 +107,11 @@ def detect_and_set_adb_keyboard(device_id: str | None = None) -> str:
     hdc_prefix = _get_hdc_prefix(device_id)
 
     # Get current IME (if HarmonyOS supports this)
-    try:
-        result = _run_hdc_command(
-            hdc_prefix + ["shell", "settings", "get", "secure", "default_input_method"],
-            capture_output=True,
-            text=True,
-        )
-        current_ime = (result.stdout + result.stderr).strip()
-
-        # If ADB Keyboard equivalent exists for HarmonyOS, switch to it
-        # For now, we'll just return the current IME
-        return current_ime
-    except Exception:
-        return ""
+    result = _run_input_command(
+        hdc_prefix + ["shell", "settings", "get", "secure", "default_input_method"]
+    )
+    # This placeholder does not switch HarmonyOS keyboards.
+    return result.stdout.strip()
 
 
 def restore_keyboard(ime: str, device_id: str | None = None) -> None:
@@ -137,11 +127,8 @@ def restore_keyboard(ime: str, device_id: str | None = None) -> None:
 
     hdc_prefix = _get_hdc_prefix(device_id)
 
-    _run_hdc_command(
+    _run_input_command(
         hdc_prefix + ["shell", "ime", "set", ime],
-        capture_output=True,
-        text=True,
-        check=True,
     )
 
 

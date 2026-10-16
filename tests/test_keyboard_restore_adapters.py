@@ -45,8 +45,9 @@ class KeyboardRestoreAdapterTests(unittest.TestCase):
 
     def test_nonzero_restore_exit_is_reported(self):
         for adapter, _, _ in adapters(returncode=7):
-            with self.subTest(adapter=adapter.__name__), self.assertRaises(subprocess.CalledProcessError):
+            with self.subTest(adapter=adapter.__name__), self.assertRaises(RuntimeError) as caught:
                 adapter.restore_keyboard("original-ime", "selected-device")
+            self.assertIn("7", str(caught.exception))
 
     def test_restore_transport_error_is_not_swallowed(self):
         for adapter, _, _ in adapters(error=OSError("transport unavailable")):

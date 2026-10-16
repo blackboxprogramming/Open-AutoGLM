@@ -1,11 +1,22 @@
 """Input utilities for Android device text input.
 
-Modified by BlackRoad: propagate failed keyboard restoration commands.
+Modified by BlackRoad: check input commands and restore failed keyboard selection.
 """
 
 import base64
 import subprocess
+from subprocess import CalledProcessError
 from typing import Optional
+
+
+def _run_input_command(command: list[str]) -> subprocess.CompletedProcess:
+    """Check command exit without exposing typed content in error messages."""
+    try:
+        return subprocess.run(command, capture_output=True, text=True, check=True)
+    except CalledProcessError as error:
+        raise RuntimeError(
+            f"ADB input command failed with exit status {error.returncode}"
+        ) from None
 
 
 def type_text(text: str, device_id: str | None = None) -> None:
@@ -23,7 +34,7 @@ def type_text(text: str, device_id: str | None = None) -> None:
     adb_prefix = _get_adb_prefix(device_id)
     encoded_text = base64.b64encode(text.encode("utf-8")).decode("utf-8")
 
-    subprocess.run(
+    _run_input_command(
         adb_prefix
         + [
             "shell",
@@ -35,8 +46,6 @@ def type_text(text: str, device_id: str | None = None) -> None:
             "msg",
             encoded_text,
         ],
-        capture_output=True,
-        text=True,
     )
 
 
@@ -49,10 +58,8 @@ def clear_text(device_id: str | None = None) -> None:
     """
     adb_prefix = _get_adb_prefix(device_id)
 
-    subprocess.run(
+    _run_input_command(
         adb_prefix + ["shell", "am", "broadcast", "-a", "ADB_CLEAR_TEXT"],
-        capture_output=True,
-        text=True,
     )
 
 
@@ -69,23 +76,35 @@ def detect_and_set_adb_keyboard(device_id: str | None = None) -> str:
     adb_prefix = _get_adb_prefix(device_id)
 
     # Get current IME
-    result = subprocess.run(
+    result = _run_input_command(
         adb_prefix + ["shell", "settings", "get", "secure", "default_input_method"],
-        capture_output=True,
-        text=True,
     )
-    current_ime = (result.stdout + result.stderr).strip()
+    current_ime = result.stdout.strip()
+    components = current_ime.split("/")
+    if (
+        len(components) != 2
+        or not all(components)
+        or any(character.isspace() for character in current_ime)
+    ):
+        raise ValueError("Cannot establish the original keyboard IME")
 
-    # Switch to ADB Keyboard if not already set
-    if "com.android.adbkeyboard/.AdbIME" not in current_ime:
-        subprocess.run(
-            adb_prefix + ["shell", "ime", "set", "com.android.adbkeyboard/.AdbIME"],
-            capture_output=True,
-            text=True,
-        )
-
-    # Warm up the keyboard
-    type_text("", device_id)
+    try:
+        # Switch to ADB Keyboard if not already set, then warm it up.
+        if current_ime != "com.android.adbkeyboard/.AdbIME":
+            _run_input_command(
+                adb_prefix + ["shell", "ime", "set", "com.android.adbkeyboard/.AdbIME"]
+            )
+        type_text("", device_id)
+    except BaseException as selection_error:
+        try:
+            restore_keyboard(current_ime, device_id)
+        except Exception as restore_error:
+            if isinstance(selection_error, Exception):
+                raise RuntimeError(
+                    f"Keyboard selection failed: {selection_error}; "
+                    f"restoration failed: {restore_error}"
+                ) from selection_error
+        raise
 
     return current_ime
 
@@ -100,11 +119,8 @@ def restore_keyboard(ime: str, device_id: str | None = None) -> None:
     """
     adb_prefix = _get_adb_prefix(device_id)
 
-    subprocess.run(
+    _run_input_command(
         adb_prefix + ["shell", "ime", "set", ime],
-        capture_output=True,
-        text=True,
-        check=True,
     )
 
 

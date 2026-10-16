@@ -112,8 +112,40 @@ combined test methods now pass, with compilation and whitespace checks passing.
 The restore-adapter tests load actual source, including the HDC command helper,
 and replace subprocess execution only. No keyboard or device was changed here.
 
-This covers cleanup after selection returns an original IME. Partial changes
-inside a keyboard-selection call that raises before returning, nonzero exits
-from other text-entry commands, and iOS keyboard lifecycle remain separate
-work. Tests establish restoration attempts and error propagation, not live
-keyboard restoration or successful on-device text entry.
+This cleanup slice initially covered selection calls that returned an original
+IME. The checked-input-command section below extends coverage to selection
+rollback and text-command exit handling. Tests establish restoration attempts
+and error propagation, not live keyboard restoration or successful on-device
+text entry. iOS keyboard lifecycle remains separate work.
+
+## Checked text-input commands and selection rollback
+
+All ADB/HDC commands in the two existing input adapter modules now use checked
+subprocess execution. Nonzero clear/type/query/switch/restore exits propagate
+as RuntimeError diagnostics containing the transport and exit status, without
+copying the command's typed text or base64 payload. This changes nonzero restore
+errors from CalledProcessError to RuntimeError; public functions retain their
+existing success return types. Existing transport errors continue to propagate.
+Other verbose logging, including opt-in HDC command logging, is unchanged.
+
+HarmonyOS stops remaining multiline input if a text or ENTER command fails,
+rather than printing an error and continuing. Its keyboard query returns only
+stdout and no longer converts command failures into an empty successful result.
+The successful empty-IME placeholder behavior remains; actual HarmonyOS keyboard
+selection support is not added.
+
+Android queries read only stdout and require one nonempty package/component IME
+without whitespace. Unknown or malformed original IDs fail before switching or
+clearing text. Switching/warmup failures attempt restoration once the original
+IME is known. Combined selection/restoration errors preserve both status
+diagnostics; an interruption still propagates after the rollback attempt.
+An already selected ADB keyboard skips the redundant switch.
+
+The first eight command tests reproduced nine failed assertions and three errors
+against `90dc3f8e3881e1967b15fa3e8bb6fb3f169c3235`. With additional rollback and
+handler/adapter collaboration coverage, all 54 test methods pass. Actual input
+adapter functions and the HDC helper run with subprocess outcomes isolated;
+the collaboration tests confirm command failures reach the real handler as
+failed actions followed by restoration attempts. Compilation and whitespace
+checks pass. No live inference or device commands were run, and a zero process
+exit still does not independently verify the resulting on-device state.
