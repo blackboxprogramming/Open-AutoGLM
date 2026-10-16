@@ -1,6 +1,11 @@
-"""Action handler for processing AI model outputs."""
+"""Action handler for processing AI model outputs.
+
+Modified by BlackRoad: strictly parse literal calls, reserve metadata, bound
+coordinate/wait inputs and restore the original keyboard after text-entry errors.
+"""
 
 import ast
+import math
 import re
 import subprocess
 import time
@@ -9,6 +14,43 @@ from typing import Any, Callable
 
 from phone_agent.config.timing import TIMING_CONFIG
 from phone_agent.device_factory import get_device_factory
+
+
+def relative_to_absolute(
+    element: list[int] | tuple[int, int], screen_width: int, screen_height: int
+) -> tuple[int, int]:
+    """Validate documented 0-999 coordinates and scale with integer arithmetic."""
+    if (
+        type(screen_width) is not int
+        or type(screen_height) is not int
+        or screen_width <= 0
+        or screen_height <= 0
+    ):
+        raise ValueError("Screen dimensions must be positive integers")
+    if not isinstance(element, (list, tuple)) or len(element) != 2:
+        raise ValueError("Coordinates must contain exactly two integers")
+    if any(type(value) is not int or not 0 <= value <= 999 for value in element):
+        raise ValueError("Coordinates must be integers between 0 and 999")
+    return (
+        element[0] * screen_width // 1000,
+        element[1] * screen_height // 1000,
+    )
+
+
+def parse_wait_duration(value: str) -> float:
+    """Parse a finite wait of 0-30 seconds; do not replace invalid input."""
+    if not isinstance(value, str):
+        raise ValueError("Wait duration must be a string")
+    text = value.strip()
+    if text.endswith("seconds"):
+        text = text[:-7].strip()
+    try:
+        duration = float(text)
+    except ValueError:
+        raise ValueError("Wait duration must be a number of seconds") from None
+    if not math.isfinite(duration) or not 0 <= duration <= 30:
+        raise ValueError("Wait duration must be finite and between 0 and 30 seconds")
+    return duration
 
 
 @dataclass
@@ -110,10 +152,8 @@ class ActionHandler:
     def _convert_relative_to_absolute(
         self, element: list[int], screen_width: int, screen_height: int
     ) -> tuple[int, int]:
-        """Convert relative coordinates (0-1000) to absolute pixels."""
-        x = int(element[0] / 1000 * screen_width)
-        y = int(element[1] / 1000 * screen_height)
-        return x, y
+        """Validate relative coordinates (0-999) and convert to pixels."""
+        return relative_to_absolute(element, screen_width, screen_height)
 
     def _handle_launch(self, action: dict, width: int, height: int) -> ActionResult:
         """Handle app launch action."""
@@ -151,24 +191,36 @@ class ActionHandler:
     def _handle_type(self, action: dict, width: int, height: int) -> ActionResult:
         """Handle text input action."""
         text = action.get("text", "")
+        if not isinstance(text, str):
+            return ActionResult(False, False, "Text input must be a string")
 
         device_factory = get_device_factory()
 
         # Switch to ADB keyboard
         original_ime = device_factory.detect_and_set_adb_keyboard(self.device_id)
-        time.sleep(TIMING_CONFIG.action.keyboard_switch_delay)
-
-        # Clear existing text and type new text
-        device_factory.clear_text(self.device_id)
-        time.sleep(TIMING_CONFIG.action.text_clear_delay)
-
-        # Handle multiline text by splitting on newlines
-        device_factory.type_text(text, self.device_id)
-        time.sleep(TIMING_CONFIG.action.text_input_delay)
-
-        # Restore original keyboard
-        device_factory.restore_keyboard(original_ime, self.device_id)
-        time.sleep(TIMING_CONFIG.action.keyboard_restore_delay)
+        input_error = None
+        try:
+            time.sleep(TIMING_CONFIG.action.keyboard_switch_delay)
+            device_factory.clear_text(self.device_id)
+            time.sleep(TIMING_CONFIG.action.text_clear_delay)
+            device_factory.type_text(text, self.device_id)
+            time.sleep(TIMING_CONFIG.action.text_input_delay)
+        except BaseException as error:
+            input_error = error
+            raise
+        finally:
+            try:
+                device_factory.restore_keyboard(original_ime, self.device_id)
+                time.sleep(TIMING_CONFIG.action.keyboard_restore_delay)
+            except Exception as restore_error:
+                if input_error is None:
+                    raise
+                if isinstance(input_error, Exception):
+                    raise RuntimeError(
+                        f"Text input failed: {input_error}; "
+                        f"keyboard restoration failed: {restore_error}"
+                    ) from input_error
+                # Preserve an active interruption even if cleanup also fails.
 
         return ActionResult(True, False)
 
@@ -223,12 +275,7 @@ class ActionHandler:
 
     def _handle_wait(self, action: dict, width: int, height: int) -> ActionResult:
         """Handle wait action."""
-        duration_str = action.get("duration", "1 seconds")
-        try:
-            duration = float(duration_str.replace("seconds", "").strip())
-        except ValueError:
-            duration = 1.0
-
+        duration = parse_wait_duration(action.get("duration", "1 seconds"))
         time.sleep(duration)
         return ActionResult(True, False)
 
@@ -330,61 +377,64 @@ class ActionHandler:
 
 
 def parse_action(response: str) -> dict[str, Any]:
+    """Parse one literal do(...) or finish(...) call without executing code.
+
+    Model text cannot supply internal metadata. Strings must use valid Python
+    quoting and escaping; raw multiline text can use triple-quoted literals.
+    Malformed, oversized and excessively complex responses raise ValueError
+    without echoing their potentially private content.
     """
-    Parse action from model response.
+    if not isinstance(response, str):
+        raise ValueError("Action response must be a string")
+    if len(response) > 65536:
+        raise ValueError("Action response exceeds the 65536-character limit")
 
-    Args:
-        response: Raw response string from the model.
-
-    Returns:
-        Parsed action dictionary.
-
-    Raises:
-        ValueError: If the response cannot be parsed.
-    """
-    print(f"Parsing action: {response}")
     try:
-        response = response.strip()
-        if response.startswith('do(action="Type"') or response.startswith(
-            'do(action="Type_Name"'
-        ):
-            text = response.split("text=", 1)[1][1:-2]
-            action = {"_metadata": "do", "action": "Type", "text": text}
-            return action
-        elif response.startswith("do"):
-            # Use AST parsing instead of eval for safety
-            try:
-                # Escape special characters (newlines, tabs, etc.) for valid Python syntax
-                response = response.replace('\n', '\\n')
-                response = response.replace('\r', '\\r')
-                response = response.replace('\t', '\\t')
+        tree = ast.parse(response.strip(), mode="eval")
+    except (SyntaxError, ValueError, RecursionError):
+        raise ValueError("Invalid action syntax") from None
 
-                tree = ast.parse(response, mode="eval")
-                if not isinstance(tree.body, ast.Call):
-                    raise ValueError("Expected a function call")
+    if sum(1 for _ in ast.walk(tree)) > 4096:
+        raise ValueError("Action response is too complex")
+    call = tree.body
+    if (
+        not isinstance(call, ast.Call)
+        or not isinstance(call.func, ast.Name)
+        or call.func.id not in {"do", "finish"}
+    ):
+        raise ValueError("Expected one do() or finish() call")
+    if call.args:
+        raise ValueError("Action calls accept keyword arguments only")
 
-                call = tree.body
-                # Extract keyword arguments safely
-                action = {"_metadata": "do"}
-                for keyword in call.keywords:
-                    key = keyword.arg
-                    value = ast.literal_eval(keyword.value)
-                    action[key] = value
+    arguments = {}
+    for keyword in call.keywords:
+        key = keyword.arg
+        if key is None:
+            raise ValueError("Expanded keyword arguments are not allowed")
+        if key == "_metadata":
+            raise ValueError("Action metadata is reserved")
+        if key in arguments:
+            raise ValueError("Duplicate action keyword")
+        try:
+            arguments[key] = ast.literal_eval(keyword.value)
+        except (ValueError, TypeError, SyntaxError, RecursionError):
+            raise ValueError("Action values must be literals") from None
 
-                return action
-            except (SyntaxError, ValueError) as e:
-                raise ValueError(f"Failed to parse do() action: {e}")
+    if call.func.id == "finish":
+        if set(arguments) - {"message"}:
+            raise ValueError("finish() accepts only a message")
+        if "message" in arguments and not isinstance(arguments["message"], str):
+            raise ValueError("Finish message must be a string")
+    else:
+        action_name = arguments.get("action")
+        if not isinstance(action_name, str) or not action_name.strip():
+            raise ValueError("do() requires a nonempty string action")
+        if action_name in {"Type", "Type_Name"}:
+            if not isinstance(arguments.get("text"), str):
+                raise ValueError("Type actions require string text")
+            arguments["action"] = "Type"
 
-        elif response.startswith("finish"):
-            action = {
-                "_metadata": "finish",
-                "message": response.replace("finish(message=", "")[1:-2],
-            }
-        else:
-            raise ValueError(f"Failed to parse action: {response}")
-        return action
-    except Exception as e:
-        raise ValueError(f"Failed to parse action: {e}")
+    return {"_metadata": call.func.id, **arguments}
 
 
 def do(**kwargs) -> dict[str, Any]:

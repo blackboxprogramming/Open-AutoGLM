@@ -1,4 +1,6 @@
-"""iOS PhoneAgent class for orchestrating iOS phone automation."""
+"""Modified by BlackRoad: preserve failed step outcomes instead of reporting success.
+
+iOS PhoneAgent class for orchestrating iOS phone automation."""
 
 import json
 import traceback
@@ -116,14 +118,14 @@ class IOSPhoneAgent:
         result = self._execute_step(task, is_first=True)
 
         if result.finished:
-            return result.message or "Task completed"
+            return result.message or ("Task completed" if result.success else "Task failed")
 
         # Continue until finished or max steps reached
         while self._step_count < self.agent_config.max_steps:
             result = self._execute_step(is_first=False)
 
             if result.finished:
-                return result.message or "Task completed"
+                return result.message or ("Task completed" if result.success else "Task failed")
 
         return "Max steps reached"
 
@@ -208,10 +210,16 @@ class IOSPhoneAgent:
         # Parse action from response
         try:
             action = parse_action(response.action)
-        except ValueError:
+        except ValueError as e:
             if self.agent_config.verbose:
                 traceback.print_exc()
-            action = finish(message=response.action)
+            return StepResult(
+                success=False,
+                finished=True,
+                action=None,
+                thinking=response.thinking,
+                message=f"Action parse error: {e}",
+            )
 
         if self.agent_config.verbose:
             # Print thinking process
@@ -236,8 +244,12 @@ class IOSPhoneAgent:
         except Exception as e:
             if self.agent_config.verbose:
                 traceback.print_exc()
-            result = self.action_handler.execute(
-                finish(message=str(e)), screenshot.width, screenshot.height
+            return StepResult(
+                success=False,
+                finished=True,
+                action=action,
+                thinking=response.thinking,
+                message=f"Action execution error: {e}",
             )
 
         # Add assistant response to context
@@ -250,7 +262,7 @@ class IOSPhoneAgent:
         # Check if finished
         finished = action.get("_metadata") == "finish" or result.should_finish
 
-        if finished and self.agent_config.verbose:
+        if finished and result.success and self.agent_config.verbose:
             msgs = get_messages(self.agent_config.lang)
             print("\n" + "🎉 " + "=" * 48)
             print(
