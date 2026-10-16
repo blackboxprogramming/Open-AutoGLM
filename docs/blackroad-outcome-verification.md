@@ -149,3 +149,24 @@ the collaboration tests confirm command failures reach the real handler as
 failed actions followed by restoration attempts. Compilation and whitespace
 checks pass. No live inference or device commands were run, and a zero process
 exit still does not independently verify the resulting on-device state.
+
+## Bounded input command waits
+
+Every ADB/HDC input adapter command now supplies a ten-second subprocess timeout,
+including keyboard query, switch, warmup, clear, type and restore. TimeoutExpired
+becomes a payload-free RuntimeError reporting the transport and configured
+duration. Keyboard cleanup and selection rollback remain eligible after timeout;
+their own commands have the same individual timeout. No command retry is added.
+
+The initial five timeout tests reproduced eleven failed assertions and four
+errors against `c24b318ca90cfb71bae019385ec9c0ffac2cc887`. All 60 combined tests
+now pass, including one test that runs both real helpers against local Python
+child processes with a shortened 0.1-second test timeout. It verifies each child
+was terminated and reaped. Other timeout tests check all input operations, error
+payload redaction, handler cleanup and selection/restore timeout diagnostics.
+Compilation and whitespace checks pass.
+
+This bounds the wait for each local input subprocess; it is not a whole-task
+deadline. A local timeout does not establish cancellation of a command already
+accepted by a remote device, nor prove restoration succeeded. No ADB/HDC device
+commands or inference were run during this verification.

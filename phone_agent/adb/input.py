@@ -1,18 +1,28 @@
 """Input utilities for Android device text input.
 
-Modified by BlackRoad: check input commands and restore failed keyboard selection.
+Modified by BlackRoad: bound/check input commands and restore failed selection.
 """
 
 import base64
 import subprocess
-from subprocess import CalledProcessError
+from subprocess import CalledProcessError, TimeoutExpired
 from typing import Optional
 
 
+INPUT_COMMAND_TIMEOUT_SECONDS = 10.0
+
+
 def _run_input_command(command: list[str]) -> subprocess.CompletedProcess:
-    """Check command exit without exposing typed content in error messages."""
+    """Bound command wait and check exit without exposing typed content."""
     try:
-        return subprocess.run(command, capture_output=True, text=True, check=True)
+        return subprocess.run(
+            command, capture_output=True, text=True, check=True,
+            timeout=INPUT_COMMAND_TIMEOUT_SECONDS,
+        )
+    except TimeoutExpired:
+        raise RuntimeError(
+            f"ADB input command timed out after {INPUT_COMMAND_TIMEOUT_SECONDS:g} seconds"
+        ) from None
     except CalledProcessError as error:
         raise RuntimeError(
             f"ADB input command failed with exit status {error.returncode}"

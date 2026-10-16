@@ -1,20 +1,30 @@
 """Input utilities for HarmonyOS device text input.
 
-Modified by BlackRoad: check input commands and propagate multiline failures.
+Modified by BlackRoad: bound/check input commands and propagate multiline failures.
 """
 
 import base64
 import subprocess
-from subprocess import CalledProcessError
+from subprocess import CalledProcessError, TimeoutExpired
 from typing import Optional
 
 from phone_agent.hdc.connection import _run_hdc_command
 
 
+INPUT_COMMAND_TIMEOUT_SECONDS = 10.0
+
+
 def _run_input_command(command: list[str]) -> subprocess.CompletedProcess:
-    """Check command exit without exposing typed content in error messages."""
+    """Bound command wait and check exit without exposing typed content."""
     try:
-        return _run_hdc_command(command, capture_output=True, text=True, check=True)
+        return _run_hdc_command(
+            command, capture_output=True, text=True, check=True,
+            timeout=INPUT_COMMAND_TIMEOUT_SECONDS,
+        )
+    except TimeoutExpired:
+        raise RuntimeError(
+            f"HDC input command timed out after {INPUT_COMMAND_TIMEOUT_SECONDS:g} seconds"
+        ) from None
     except CalledProcessError as error:
         raise RuntimeError(
             f"HDC input command failed with exit status {error.returncode}"
